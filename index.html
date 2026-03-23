@@ -773,6 +773,76 @@ function scrollBottom() {
   el.scrollTop = el.scrollHeight;
 }
 
+// ── TOC DETECTION ────────────────────────────────────────
+function isToCRequest(q) {
+  const t = q.toLowerCase();
+  return t.includes("theory of change") || t.includes("toc") ||
+    t.includes("build a toc") || t.includes("map the") ||
+    (t.includes("build") && t.includes("change"));
+}
+
+// ── TOC API CALL ──────────────────────────────────────────
+async function sendToCMessage(q) {
+  const topic = q.replace(/build a theory of change for/i,"")
+                 .replace(/theory of change for/i,"")
+                 .replace(/build a toc for/i,"")
+                 .replace(/toc for/i,"")
+                 .trim() || q;
+
+  const tocSystem = `You are a UK government policy analyst. Your job is to build a Theory of Change table.
+
+You MUST respond in this EXACT format and no other. Do not add any prose, explanation, or markdown outside of this structure.
+
+First line: a sentence describing the top-level outcome.
+Second section: a numbered list of sub-outcome areas (just the names, one per line, numbered 1. 2. 3. etc), preceded by the heading "Sub-outcome areas:"
+Third section: the full Theory of Change table for the most relevant sub-outcome, using EXACTLY this pipe-separated format, one row per line:
+
+TOC_TABLE_START
+Top-level outcome | [value]
+Sub-outcome | [value]
+Medium-term outcome | [value]
+Short-term outcome | [value]
+Output | [value]
+Service | [value]
+Activity | [value]
+Powers | [value]
+People | [value]
+Money | [value]
+Data | [value]
+Technology | [value]
+Partnerships | [value]
+Key assumptions | [value]
+External factors | [value]
+TOC_TABLE_END
+
+Use "—" if a row does not apply. Base content on real UK government policy from GOV.UK. Be specific and concise in each cell.`;
+
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      system: tocSystem,
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      messages: [{ role: "user", content: `Build a Theory of Change for: ${topic}` }],
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error?.message || `API error ${resp.status}`);
+  }
+
+  const data = await resp.json();
+  return (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+}
+
 // ── SEND ─────────────────────────────────────────────────
 async function sendMessage(text) {
   const input = document.getElementById("chat-input");
@@ -789,42 +859,49 @@ async function sendMessage(text) {
   appendThinking();
 
   const lensId = activeLens || detectLens(q);
-  const lensNote = activeLens
-    ? `\n\nThe user has selected the "${LENSES.find(l=>l.id===activeLens)?.label}" lens — bias your search and response towards that dimension.`
-    : "";
+  const isToc = isToCRequest(q);
 
   try {
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: SYSTEM_PROMPT + lensNote,
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-        messages: messageHistory,
-      }),
-    });
+    let responseText = "";
 
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error?.message || `API error ${resp.status}`);
+    if (isToc) {
+      // Use dedicated strict ToC call
+      responseText = await sendToCMessage(q);
+    } else {
+      // Normal conversational call
+      const lensNote = activeLens
+        ? `\n\nThe user has selected the "${LENSES.find(l=>l.id===activeLens)?.label}" lens — bias your search and response towards that dimension.`
+        : "";
+
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: SYSTEM_PROMPT + lensNote,
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          messages: messageHistory,
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error?.message || `API error ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      responseText = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
     }
-
-    const data = await resp.json();
-    const responseText = (data.content || [])
-      .filter(b => b.type === "text")
-      .map(b => b.text)
-      .join("");
 
     messageHistory.push({ role: "assistant", content: responseText });
     removeThinking();
-    appendAssistantMessage(responseText, lensId);
+    appendAssistantMessage(responseText, isToc ? "outcomes" : lensId);
 
   } catch (e) {
     removeThinking();
