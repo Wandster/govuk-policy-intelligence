@@ -356,8 +356,15 @@
     <label for="api-key-input">Your Anthropic API key</label>
     <input type="password" id="api-key-input" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
     <div class="error-msg" id="key-error"></div>
+    <div style="margin-bottom:12px">
+      <label for="worker-url-input" style="font-size:13px;font-weight:500;color:#333;display:block;margin-bottom:6px">
+        Cloudflare Worker URL <span style="font-weight:400;color:#999">(optional — enables full GOV.UK search)</span>
+      </label>
+      <input type="text" id="worker-url-input" placeholder="https://your-worker.your-name.workers.dev" autocomplete="off" />
+      <div style="font-size:11px;color:#999;margin-top:4px">Leave blank to use AI web search instead</div>
+    </div>
     <button class="btn-primary" id="start-btn" onclick="startApp()">Start researching →</button>
-    <p class="note">Your key is stored only in your browser's local storage and never sent anywhere except the Anthropic API.</p>
+    <p class="note">Your API key is stored only in your browser's local storage and never sent anywhere except the Anthropic API.</p>
   </div>
 </div>
 
@@ -369,7 +376,7 @@
       <div class="topbar-logo">⚑</div>
       <div>
         <div class="topbar-title">GOV.UK Policy Intelligence</div>
-        <div class="topbar-sub">Marine &amp; Fisheries · Theory of Change</div>
+        <div class="topbar-sub" id="topbar-sub">Marine &amp; Fisheries · Theory of Change</div>
       </div>
     </div>
     <div class="topbar-right">
@@ -437,10 +444,58 @@ Your response style:
 
 You are helping a Principal Service Designer in the Marine and Fisheries delivery area who is building a Theory of Change.`;
 
+// ── CONFIGURATION ────────────────────────────────────────
+// Replace with your Cloudflare Worker URL once deployed
+let WORKER_URL = localStorage.getItem("govuk_worker_url") || "";
+
 let apiKey = "";
 let activeLens = null;
 let messageHistory = [];
 let isLoading = false;
+
+// ── GOV.UK API VIA WORKER ─────────────────────────────────
+async function govukSearch(query, options = {}) {
+  if (!WORKER_URL) return [];
+  const params = new URLSearchParams({
+    q: query,
+    count: options.count || 10,
+  });
+  ["title","description","link","public_timestamp",
+   "content_store_document_type","organisations"].forEach(f => params.append("fields", f));
+  if (options.org) params.append("filter_organisations", options.org);
+  if (options.docType) params.append("filter_content_store_document_type", options.docType);
+
+  try {
+    const resp = await fetch(`${WORKER_URL}/search?${params}`);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return data.results || [];
+  } catch { return []; }
+}
+
+async function govukContent(path) {
+  if (!WORKER_URL) return null;
+  try {
+    const resp = await fetch(`${WORKER_URL}/content${path}`);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch { return null; }
+}
+
+function extractBodyText(contentDoc) {
+  if (!contentDoc || !contentDoc.details) return "";
+  const body = contentDoc.details.body ||
+               contentDoc.details.introduction ||
+               contentDoc.details.summary || "";
+  if (typeof body === "string") {
+    return body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 2000);
+  }
+  if (Array.isArray(body)) {
+    return body.map(b => typeof b === "string" ? b : (b.content || ""))
+      .join(" ").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 2000);
+  }
+  return "";
+}
 
 // ── LENS DETECTION ───────────────────────────────────────
 function detectLens(text) {
@@ -465,6 +520,11 @@ function startApp() {
   errEl.style.display = "none";
   apiKey = val;
   localStorage.setItem("govuk_pi_key", val);
+  const workerVal = document.getElementById("worker-url-input").value.trim();
+  if (workerVal) {
+    WORKER_URL = workerVal.replace(/\/$/, ""); // remove trailing slash
+    localStorage.setItem("govuk_worker_url", WORKER_URL);
+  }
   showApp();
 }
 
@@ -483,6 +543,12 @@ function showApp() {
   buildLensBar();
   showEmptyState();
   setupInput();
+  const sub = document.getElementById("topbar-sub");
+  if (sub) {
+    sub.textContent = WORKER_URL
+      ? "Marine & Fisheries · GOV.UK direct search enabled"
+      : "Marine & Fisheries · AI web search (add Worker URL for full GOV.UK search)";
+  }
 }
 
 function buildLensBar() {
@@ -873,6 +939,44 @@ async function sendMessage(text) {
         ? `\n\nThe user has selected the "${LENSES.find(l=>l.id===activeLens)?.label}" lens — bias your search and response towards that dimension.`
         : "";
 
+      // Step 1: If we have a worker URL, search GOV.UK directly first
+      let govukContext = "";
+      if (WORKER_URL) {
+        document.getElementById("thinking-msg") && (document.getElementById("thinking-msg").querySelector(".msg-bubble").innerHTML =
+          '<span class="pulse-dot"></span> Searching GOV.UK…');
+        const searchResults = await govukSearch(q, { count: 10 });
+
+        if (searchResults.length > 0) {
+          // Step 2: Fetch full content for top 5 results
+          document.getElementById("thinking-msg") && (document.getElementById("thinking-msg").querySelector(".msg-bubble").innerHTML =
+            '<span class="pulse-dot"></span> Reading documents…');
+
+          const contentDocs = [];
+          for (const r of searchResults.slice(0, 5)) {
+            if (!r.link) continue;
+            const doc = await govukContent(r.link);
+            const bodyText = extractBodyText(doc);
+            contentDocs.push({
+              title: r.title,
+              link: r.link,
+              date: r.public_timestamp,
+              description: r.description || "",
+              body: bodyText,
+            });
+          }
+
+          govukContext = `\n\nThe following content was retrieved directly from the GOV.UK Search and Content APIs. Use this as your primary source:\n\n` +
+            contentDocs.map((d, i) =>
+              `[${i+1}] ${d.title}\nURL: https://www.gov.uk${d.link}\nDate: ${d.date ? new Date(d.date).toLocaleDateString("en-GB") : "unknown"}\n${d.body || d.description}`
+            ).join("\n\n---\n\n");
+        }
+      }
+
+      document.getElementById("thinking-msg") && (document.getElementById("thinking-msg").querySelector(".msg-bubble").innerHTML =
+        '<span class="pulse-dot"></span> Analysing…');
+
+      const tools = WORKER_URL ? [] : [{ type: "web_search_20250305", name: "web_search" }];
+
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -884,8 +988,8 @@ async function sendMessage(text) {
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
-          system: SYSTEM_PROMPT + lensNote,
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          system: SYSTEM_PROMPT + lensNote + govukContext,
+          tools: tools.length > 0 ? tools : undefined,
           messages: messageHistory,
         }),
       });
@@ -925,6 +1029,12 @@ function escapeHtml(str) {
     apiKey = saved;
     document.getElementById("api-key-input").value = saved;
     showApp();
+  }
+
+  const savedWorker = localStorage.getItem("govuk_worker_url");
+  if (savedWorker) {
+    WORKER_URL = savedWorker;
+    document.getElementById("worker-url-input").value = savedWorker;
   }
 
   document.getElementById("api-key-input").addEventListener("keydown", e => {
