@@ -796,17 +796,17 @@ function appendAssistantMessage(text, lensId, govukDocs) {
   });
 
   // GOV.UK direct sources panel
-  let govukSourcesHtml = "";
-  if (govukDocs && govukDocs.length > 0) {
-    govukSourcesHtml = `<div class="sources-section">
-      <div class="sources-label" style="color:#003078">&#10003; ${govukDocs.length} documents fetched from GOV.UK Search &amp; Content APIs</div>
+  let sourcesHtml = "";
+  const hasDirect = govukDocs && Array.isArray(govukDocs) && govukDocs.length > 0;
+
+  if (hasDirect) {
+    sourcesHtml = `<div class="sources-section">
+      <div class="sources-label" style="color:#003078;font-size:11px;font-weight:600">
+        ✓ ${govukDocs.length} documents fetched directly from GOV.UK APIs
+      </div>
       ${govukDocs.map(d => `<a href="https://www.gov.uk${d.link}" target="_blank" rel="noopener noreferrer" class="source-link">${d.title || d.link}</a>`).join("")}
     </div>`;
-  }
-
-  // Fallback inline sources
-  let sourcesHtml = govukSourcesHtml;
-  if (!govukSourcesHtml && sourceLines.length > 0) {
+  } else if (sourceLines.length > 0) {
     sourcesHtml = `<div class="sources-section">
       <div class="sources-label">Sources (AI web search)</div>
       ${sourceLines.map(url => `<a href="${url}" target="_blank" rel="noopener noreferrer" class="source-link">${url.replace("https://","")}</a>`).join("")}
@@ -945,6 +945,7 @@ async function sendMessage(text) {
 
   try {
     let responseText = "";
+    let fetchedDocs = [];
 
     if (isToc) {
       // Use dedicated strict ToC call
@@ -957,7 +958,6 @@ async function sendMessage(text) {
 
       // Step 1: If we have a worker URL, search GOV.UK directly first
       let govukContext = "";
-      let fetchedDocs = [];
       if (WORKER_URL) {
         setThinkingStatus("Searching GOV.UK…");
         const searchResults = await govukSearch(q, { count: 10 });
@@ -1038,17 +1038,18 @@ function escapeHtml(str) {
 
 // ── INIT ──────────────────────────────────────────────────
 (function init() {
+  // Load worker URL FIRST so it's available when showApp() runs
+  const savedWorker = localStorage.getItem("govuk_worker_url");
+  if (savedWorker) {
+    WORKER_URL = savedWorker;
+    document.getElementById("worker-url-input").value = savedWorker;
+  }
+
   const saved = localStorage.getItem("govuk_pi_key");
   if (saved && saved.startsWith("sk-ant-")) {
     apiKey = saved;
     document.getElementById("api-key-input").value = saved;
     showApp();
-  }
-
-  const savedWorker = localStorage.getItem("govuk_worker_url");
-  if (savedWorker) {
-    WORKER_URL = savedWorker;
-    document.getElementById("worker-url-input").value = savedWorker;
   }
 
   document.getElementById("api-key-input").addEventListener("keydown", e => {
