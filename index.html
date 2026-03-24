@@ -974,7 +974,20 @@ async function sendMessage(text) {
       let govukContext = "";
       if (WORKER_URL) {
         setThinkingStatus("Searching GOV.UK…");
-        const searchResults = await govukSearch(q, { count: 10 });
+        // Extract key terms from the question for a more targeted search
+        // Remove common question words and use remaining keywords
+        const stopWords = ["what","who","which","where","how","why","is","are","the","a","an",
+          "of","for","in","on","to","and","or","do","does","tell","me","about","please",
+          "can","you","give","list","explain","describe","find","show","i","want","know"];
+        const keywords = q.toLowerCase()
+          .replace(/[?.,!]/g,"")
+          .split(/\s+/)
+          .filter(w => w.length > 2 && !stopWords.includes(w))
+          .slice(0, 6)
+          .join(" ");
+        const searchQuery = keywords || q;
+        console.log("Search keywords:", searchQuery);
+        const searchResults = await govukSearch(searchQuery, { count: 10 });
 
         if (searchResults.length > 0) {
           setThinkingStatus(`Found ${searchResults.length} documents — reading content…`);
