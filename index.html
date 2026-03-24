@@ -520,8 +520,8 @@ Your response style:
 You are helping a Principal Service Designer in the Marine and Fisheries delivery area who is building a Theory of Change.`;
 
 // ── CONFIGURATION ────────────────────────────────────────
-// Replace with your Cloudflare Worker URL once deployed
-let WORKER_URL = localStorage.getItem("govuk_worker_url") || "";
+const DEFAULT_WORKER_URL = "https://solitary-firefly-c4ad.richard-wand.workers.dev";
+let WORKER_URL = localStorage.getItem("govuk_worker_url") || DEFAULT_WORKER_URL;
 
 let apiKey = "";
 let activeLens = null;
