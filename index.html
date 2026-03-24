@@ -460,26 +460,40 @@ async function govukSearch(query, options = {}) {
     q: query,
     count: options.count || 10,
   });
-  ["title","description","link","public_timestamp",
-   "content_store_document_type","organisations"].forEach(f => params.append("fields", f));
+  // These are the correct field names for the GOV.UK Search API
+  ["title","description","link","public_timestamp","content_store_document_type","organisations","format"].forEach(f => params.append("fields", f));
   if (options.org) params.append("filter_organisations", options.org);
-  if (options.docType) params.append("filter_content_store_document_type", options.docType);
 
   try {
     const resp = await fetch(`${WORKER_URL}/search?${params}`);
-    if (!resp.ok) return [];
+    if (!resp.ok) {
+      console.error("GOV.UK search error:", resp.status);
+      return [];
+    }
     const data = await resp.json();
+    console.log("GOV.UK search returned", (data.results||[]).length, "results for:", query);
     return data.results || [];
-  } catch { return []; }
+  } catch(e) {
+    console.error("GOV.UK search failed:", e);
+    return [];
+  }
 }
 
 async function govukContent(path) {
   if (!WORKER_URL) return null;
   try {
     const resp = await fetch(`${WORKER_URL}/content${path}`);
-    if (!resp.ok) return null;
-    return await resp.json();
-  } catch { return null; }
+    if (!resp.ok) {
+      console.error("GOV.UK content error for", path, resp.status);
+      return null;
+    }
+    const data = await resp.json();
+    console.log("GOV.UK content fetched:", path);
+    return data;
+  } catch(e) {
+    console.error("GOV.UK content failed:", path, e);
+    return null;
+  }
 }
 
 function extractBodyText(contentDoc) {
@@ -989,7 +1003,9 @@ async function sendMessage(text) {
 
       setThinkingStatus("Analysing with AI…");
 
-      const tools = WORKER_URL ? [] : [{ type: "web_search_20250305", name: "web_search" }];
+      // Only use web search if we don't have GOV.UK content already
+      const useWebSearch = !WORKER_URL || fetchedDocs.length === 0;
+      const tools = useWebSearch ? [{ type: "web_search_20250305", name: "web_search" }] : undefined;
 
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -1003,7 +1019,7 @@ async function sendMessage(text) {
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
           system: SYSTEM_PROMPT + lensNote + govukContext,
-          tools: tools.length > 0 ? tools : undefined,
+          ...(tools ? { tools } : {}),
           messages: messageHistory,
         }),
       });
