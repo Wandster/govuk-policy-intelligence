@@ -974,20 +974,62 @@ async function sendMessage(text) {
       let govukContext = "";
       if (WORKER_URL) {
         setThinkingStatus("Searching GOV.UK…");
-        // Extract key terms from the question for a more targeted search
-        // Remove common question words and use remaining keywords
-        const stopWords = ["what","who","which","where","how","why","is","are","the","a","an",
-          "of","for","in","on","to","and","or","do","does","tell","me","about","please",
-          "can","you","give","list","explain","describe","find","show","i","want","know"];
+
+        // Strip question words to get focused keywords
+        const stopWords = new Set(["what","who","which","where","how","why","is","are","the",
+          "a","an","of","for","in","on","to","and","or","do","does","tell","me","about",
+          "please","can","you","give","list","explain","describe","find","show","i","want",
+          "know","with","their","its","this","that","these","those","will","would","could",
+          "should","have","has","been","be","by","from","at","as","an","any","all"]);
         const keywords = q.toLowerCase()
-          .replace(/[?.,!]/g,"")
-          .split(/\s+/)
-          .filter(w => w.length > 2 && !stopWords.includes(w))
+          .replace(/[?.,!;:]/g, "")
+          .split(" ")
+          .filter(w => w.length > 2 && !stopWords.has(w))
           .slice(0, 6)
           .join(" ");
         const searchQuery = keywords || q;
-        console.log("Search keywords:", searchQuery);
-        const searchResults = await govukSearch(searchQuery, { count: 10 });
+        console.log("GOV.UK search keywords:", searchQuery);
+
+        // Search across key marine/DEFRA organisations by default
+        const marineOrgs = [
+          "department-for-environment-food-rural-affairs",
+          "marine-management-organisation",
+          "natural-england",
+          "joint-nature-conservation-committee",
+          "environment-agency"
+        ];
+
+        // Run searches across relevant orgs and merge results
+        const allResults = [];
+        const seen = new Set();
+        for (const org of marineOrgs.slice(0, 3)) {
+          const results = await govukSearch(searchQuery, { count: 5, org });
+          for (const r of results) {
+            if (!seen.has(r.link)) {
+              seen.add(r.link);
+              allResults.push(r);
+            }
+          }
+        }
+        // Also do a broader unfiltered search but only keep gov.uk policy/guidance pages
+        const broadResults = await govukSearch(searchQuery, { count: 10 });
+        const policyTypes = new Set(["guidance","policy_paper","consultation","detailed_guide",
+          "news_article","press_release","speech","written_statement","collection"]);
+        for (const r of broadResults) {
+          if (!seen.has(r.link)) {
+            const docType = r.content_store_document_type || r.document_type || "";
+            const isPolicy = policyTypes.has(docType) ||
+              r.link.includes("/guidance/") ||
+              r.link.includes("/government/") ||
+              r.link.includes("/policy/");
+            if (isPolicy) {
+              seen.add(r.link);
+              allResults.push(r);
+            }
+          }
+        }
+        const searchResults = allResults.slice(0, 10);
+        console.log("GOV.UK total results assembled:", searchResults.length);
 
         if (searchResults.length > 0) {
           setThinkingStatus(`Found ${searchResults.length} documents — reading content…`);
