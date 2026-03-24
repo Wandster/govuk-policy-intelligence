@@ -673,11 +673,18 @@ function appendThinking() {
     <div class="msg-body">
       <div class="msg-bubble">
         <span class="pulse-dot"></span>
-        Searching GOV.UK…
+        <span class="thinking-text">${WORKER_URL ? "Searching GOV.UK…" : "Thinking…"}</span>
       </div>
     </div>`;
   wrap.appendChild(div);
   scrollBottom();
+}
+
+function setThinkingStatus(msg) {
+  const el = document.getElementById("thinking-msg");
+  if (!el) return;
+  const span = el.querySelector(".thinking-text");
+  if (span) span.textContent = msg;
 }
 
 function removeThinking() {
@@ -723,7 +730,7 @@ function renderToCTable(tableText) {
   return html;
 }
 
-function appendAssistantMessage(text, lensId) {
+function appendAssistantMessage(text, lensId, govukDocs) {
   const wrap = document.getElementById("msg-wrap");
   const lens = LENSES.find(l => l.id === lensId);
 
@@ -788,11 +795,20 @@ function appendAssistantMessage(text, lensId) {
       : `<p>${rendered}</p>`;
   });
 
-  // Sources
-  let sourcesHtml = "";
-  if (sourceLines.length > 0) {
+  // GOV.UK direct sources panel
+  let govukSourcesHtml = "";
+  if (govukDocs && govukDocs.length > 0) {
+    govukSourcesHtml = `<div class="sources-section">
+      <div class="sources-label" style="color:#003078">&#10003; ${govukDocs.length} documents fetched from GOV.UK Search &amp; Content APIs</div>
+      ${govukDocs.map(d => `<a href="https://www.gov.uk${d.link}" target="_blank" rel="noopener noreferrer" class="source-link">${d.title || d.link}</a>`).join("")}
+    </div>`;
+  }
+
+  // Fallback inline sources
+  let sourcesHtml = govukSourcesHtml;
+  if (!govukSourcesHtml && sourceLines.length > 0) {
     sourcesHtml = `<div class="sources-section">
-      <div class="sources-label">Sources</div>
+      <div class="sources-label">Sources (AI web search)</div>
       ${sourceLines.map(url => `<a href="${url}" target="_blank" rel="noopener noreferrer" class="source-link">${url.replace("https://","")}</a>`).join("")}
     </div>`;
   }
@@ -941,22 +957,21 @@ async function sendMessage(text) {
 
       // Step 1: If we have a worker URL, search GOV.UK directly first
       let govukContext = "";
+      let fetchedDocs = [];
       if (WORKER_URL) {
-        document.getElementById("thinking-msg") && (document.getElementById("thinking-msg").querySelector(".msg-bubble").innerHTML =
-          '<span class="pulse-dot"></span> Searching GOV.UK…');
+        setThinkingStatus("Searching GOV.UK…");
         const searchResults = await govukSearch(q, { count: 10 });
 
         if (searchResults.length > 0) {
-          // Step 2: Fetch full content for top 5 results
-          document.getElementById("thinking-msg") && (document.getElementById("thinking-msg").querySelector(".msg-bubble").innerHTML =
-            '<span class="pulse-dot"></span> Reading documents…');
+          setThinkingStatus(`Found ${searchResults.length} documents — reading content…`);
 
-          const contentDocs = [];
-          for (const r of searchResults.slice(0, 5)) {
+          for (let i = 0; i < Math.min(5, searchResults.length); i++) {
+            const r = searchResults[i];
             if (!r.link) continue;
+            setThinkingStatus(`Reading document ${i+1} of ${Math.min(5, searchResults.length)}…`);
             const doc = await govukContent(r.link);
             const bodyText = extractBodyText(doc);
-            contentDocs.push({
+            fetchedDocs.push({
               title: r.title,
               link: r.link,
               date: r.public_timestamp,
@@ -965,15 +980,14 @@ async function sendMessage(text) {
             });
           }
 
-          govukContext = `\n\nThe following content was retrieved directly from the GOV.UK Search and Content APIs. Use this as your primary source:\n\n` +
-            contentDocs.map((d, i) =>
+          govukContext = `\n\nThe following content was retrieved directly from the GOV.UK Search and Content APIs. Use this as your primary source — do not use web search as these are the authoritative GOV.UK documents:\n\n` +
+            fetchedDocs.map((d, i) =>
               `[${i+1}] ${d.title}\nURL: https://www.gov.uk${d.link}\nDate: ${d.date ? new Date(d.date).toLocaleDateString("en-GB") : "unknown"}\n${d.body || d.description}`
             ).join("\n\n---\n\n");
         }
       }
 
-      document.getElementById("thinking-msg") && (document.getElementById("thinking-msg").querySelector(".msg-bubble").innerHTML =
-        '<span class="pulse-dot"></span> Analysing…');
+      setThinkingStatus("Analysing with AI…");
 
       const tools = WORKER_URL ? [] : [{ type: "web_search_20250305", name: "web_search" }];
 
@@ -1005,7 +1019,7 @@ async function sendMessage(text) {
 
     messageHistory.push({ role: "assistant", content: responseText });
     removeThinking();
-    appendAssistantMessage(responseText, isToc ? "outcomes" : lensId);
+    appendAssistantMessage(responseText, isToc ? "outcomes" : lensId, isToc ? [] : fetchedDocs);
 
   } catch (e) {
     removeThinking();
