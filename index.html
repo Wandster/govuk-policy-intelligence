@@ -1232,59 +1232,84 @@ async function sendMessage(text) {
       if (WORKER_URL) {
         setThinkingStatus("Searching GOV.UK…");
 
-        // Strip question words to get focused keywords
+        // Build a smart, focused search query
         const stopWords = new Set(["what","who","which","where","how","why","is","are","the",
           "a","an","of","for","in","on","to","and","or","do","does","tell","me","about",
           "please","can","you","give","list","explain","describe","find","show","i","want",
           "know","with","their","its","this","that","these","those","will","would","could",
-          "should","have","has","been","be","by","from","at","as","an","any","all"]);
-        const keywords = q.toLowerCase()
-          .replace(/[?.,!;:]/g, "")
-          .split(" ")
-          .filter(w => w.length > 2 && !stopWords.has(w))
-          .slice(0, 6)
-          .join(" ");
-        const searchQuery = keywords || q;
+          "should","have","has","been","be","by","from","at","as","an","any","all",
+          "desired","outcomes","activities","services","policies","information","details"]);
+
+        // Keep domain-specific terms that are meaningful for fisheries/marine
+        const domainTerms = new Set(["fisher","fishers","fishing","fisheries","marine","catch",
+          "reporting","vessel","quota","stock","habitat","mpa","licence","permit","MMO",
+          "defra","bycatch","tac","vms","logbook","landing","aquaculture","inshore","offshore"]);
+
+        const words = q.toLowerCase().replace(/[?.,!;:]/g, "").split(" ");
+        // Prioritise domain terms, then other meaningful words
+        const domainMatches = words.filter(w => domainTerms.has(w));
+        const otherKeywords = words.filter(w => w.length > 3 && !stopWords.has(w) && !domainTerms.has(w));
+        const allKeywords = [...new Set([...domainMatches, ...otherKeywords])].slice(0, 6);
+        const searchQuery = allKeywords.length > 0 ? allKeywords.join(" ") : q;
         console.log("GOV.UK search keywords:", searchQuery);
 
-        // Search across key marine/DEFRA organisations by default
-        const marineOrgs = [
+        // Search DEFRA and MMO first (most relevant for marine/fisheries)
+        const primaryOrgs = [
           "department-for-environment-food-rural-affairs",
           "marine-management-organisation",
+        ];
+        const secondaryOrgs = [
           "natural-england",
           "joint-nature-conservation-committee",
-          "environment-agency"
         ];
 
-        // Run searches across relevant orgs and merge results
         const allResults = [];
         const seen = new Set();
-        for (const org of marineOrgs.slice(0, 3)) {
-          const results = await govukSearch(searchQuery, { count: 5, org });
+
+        // Primary orgs — get more results
+        for (const org of primaryOrgs) {
+          const results = await govukSearch(searchQuery, { count: 8, org });
           for (const r of results) {
             if (!seen.has(r.link)) {
               seen.add(r.link);
-              allResults.push(r);
+              allResults.push({ ...r, _orgPriority: 1 });
             }
           }
         }
-        // Also do a broader unfiltered search but only keep gov.uk policy/guidance pages
+
+        // Secondary orgs
+        for (const org of secondaryOrgs) {
+          const results = await govukSearch(searchQuery, { count: 4, org });
+          for (const r of results) {
+            if (!seen.has(r.link)) {
+              seen.add(r.link);
+              allResults.push({ ...r, _orgPriority: 2 });
+            }
+          }
+        }
+
+        // Broad search — but filter to policy/guidance only and require topic relevance
         const broadResults = await govukSearch(searchQuery, { count: 10 });
         const policyTypes = new Set(["guidance","policy_paper","consultation","detailed_guide",
           "news_article","press_release","speech","written_statement","collection"]);
+        const topicWords = new Set([...domainMatches, ...otherKeywords]);
         for (const r of broadResults) {
           if (!seen.has(r.link)) {
             const docType = r.content_store_document_type || r.document_type || "";
             const isPolicy = policyTypes.has(docType) ||
-              r.link.includes("/guidance/") ||
-              r.link.includes("/government/") ||
-              r.link.includes("/policy/");
-            if (isPolicy) {
+              r.link.includes("/guidance/") || r.link.includes("/government/");
+            // Check title contains at least one topic word
+            const titleLower = (r.title || "").toLowerCase();
+            const isRelevant = [...topicWords].some(w => titleLower.includes(w));
+            if (isPolicy && isRelevant) {
               seen.add(r.link);
-              allResults.push(r);
+              allResults.push({ ...r, _orgPriority: 3 });
             }
           }
         }
+
+        // Sort by org priority then take top 10
+        allResults.sort((a, b) => (a._orgPriority || 3) - (b._orgPriority || 3));
         const searchResults = allResults.slice(0, 10);
         console.log("GOV.UK total results assembled:", searchResults.length);
 
