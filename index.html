@@ -1088,7 +1088,22 @@ ${sourceText}`;
     const diagramDiv = document.createElement("div");
     diagramDiv.style.marginTop = "16px";
     diagramDiv.innerHTML = renderToCDiagram(tocData);
+
+    // Add Save as PowerPoint button below diagram
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "convert-toc-btn";
+    saveBtn.style.background = "#E6F1FB";
+    saveBtn.style.color = "#185FA5";
+    saveBtn.style.borderColor = "#B5D4F4";
+    saveBtn.style.marginTop = "10px";
+    saveBtn.innerHTML = "⬇ Save as PowerPoint";
+    saveBtn.addEventListener("click", function() {
+      saveToCasPptx(tocData);
+    });
+
     btnEl.parentNode.insertBefore(diagramDiv, btnEl.nextSibling);
+    btnEl.parentNode.insertBefore(saveBtn, diagramDiv.nextSibling);
+
     btnEl.textContent = "✓ Theory of Change created";
     btnEl.style.background = "#EAF3DE";
     btnEl.style.color = "#3B6D11";
@@ -1342,6 +1357,105 @@ function escapeHtml(str) {
   return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
+// ── SAVE TOC AS PPTX ─────────────────────────────────────
+function saveToCasPptx(tocData) {
+  const pres = new PptxGenJS();
+  pres.layout = "LAYOUT_WIDE"; // 13.3" x 7.5"
+  pres.title = "Theory of Change — " + (tocData.topic || "");
+
+  const slide = pres.addSlide();
+  slide.background = { color: "F8F9FA" };
+
+  // Title
+  slide.addText("Theory of Change: " + (tocData.topic || ""), {
+    x: 0.4, y: 0.15, w: 12.5, h: 0.4,
+    fontSize: 16, bold: true, color: "003078",
+    fontFace: "Calibri", margin: 0,
+  });
+
+  // Level definitions - colours match the app
+  const levels = [
+    { key: "inputs",     label: "Inputs",               fill: "F0EFEA", text: "444441", header: "5F5E5A", hfill: "E0DED8" },
+    { key: "activities", label: "Activities",            fill: "E1F5EE", text: "085041", header: "0F6E56", hfill: "C5EBD9" },
+    { key: "outputs",    label: "Outputs",               fill: "E6F1FB", text: "0C447C", header: "185FA5", hfill: "C5DDF5" },
+    { key: "shortTerm",  label: "Short-term outcomes",   fill: "EEEDFE", text: "26215C", header: "534AB7", hfill: "D4D2F7" },
+    { key: "longTerm",   label: "Long-term outcomes",    fill: "FAECE7", text: "4A1B0C", header: "993C1D", hfill: "F5C4B3" },
+  ];
+
+  const slideW = 13.3;
+  const slideH = 7.5;
+  const marginX = 0.4;
+  const startY = 0.65;
+  const levelH = 0.95;
+  const arrowH = 0.18;
+  const totalH = levels.length * levelH + (levels.length - 1) * arrowH + 0.85; // +0.85 for impact
+  const cardW = (slideW - marginX * 2 - 0.2) / 3;
+  const cardGap = 0.1;
+
+  levels.forEach((lv, li) => {
+    const y = startY + li * (levelH + arrowH);
+    const items = tocData[lv.key] || [{title:"—",sub:""},{title:"—",sub:""},{title:"—",sub:""}];
+
+    // Header bar
+    slide.addShape(pres.shapes.RECTANGLE, {
+      x: marginX, y: y, w: slideW - marginX * 2, h: 0.28,
+      fill: { color: lv.hfill }, line: { color: lv.hfill },
+    });
+    slide.addText(lv.label, {
+      x: marginX, y: y, w: slideW - marginX * 2, h: 0.28,
+      fontSize: 9, bold: true, color: lv.header,
+      align: "center", valign: "middle", fontFace: "Calibri", margin: 0,
+    });
+
+    // Three cards
+    items.slice(0, 3).forEach((item, ci) => {
+      const cx = marginX + ci * (cardW + cardGap);
+      const cy = y + 0.30;
+      const ch = levelH - 0.32;
+
+      slide.addShape(pres.shapes.RECTANGLE, {
+        x: cx, y: cy, w: cardW, h: ch,
+        fill: { color: lv.fill }, line: { color: lv.header, pt: 0.5 },
+      });
+      slide.addText([
+        { text: item.title || "", options: { bold: true, breakLine: true, fontSize: 9, color: lv.text } },
+        { text: item.sub || "", options: { fontSize: 7.5, color: lv.header } },
+      ], {
+        x: cx + 0.06, y: cy + 0.04, w: cardW - 0.12, h: ch - 0.08,
+        valign: "top", fontFace: "Calibri", margin: 0,
+      });
+    });
+
+    // Arrow between levels
+    if (li < levels.length - 1) {
+      const ay = y + levelH + 0.02;
+      slide.addText("↓", {
+        x: slideW / 2 - 0.3, y: ay, w: 0.6, h: arrowH,
+        fontSize: 11, color: "AAAAAA", align: "center", fontFace: "Calibri", margin: 0,
+      });
+    }
+  });
+
+  // Impact box at bottom
+  const impY = startY + levels.length * (levelH + arrowH) - arrowH + 0.05;
+  const imp = tocData.impact || {};
+  slide.addShape(pres.shapes.RECTANGLE, {
+    x: marginX, y: impY, w: slideW - marginX * 2, h: 0.72,
+    fill: { color: "1D9E75" }, line: { color: "0F6E56" },
+  });
+  slide.addText([
+    { text: "Impact  ", options: { bold: true, color: "FFFFFF", fontSize: 10, breakLine: false } },
+    { text: (imp.title || "") + (imp.sub ? " — " + imp.sub : ""), options: { color: "D0F5E8", fontSize: 9 } },
+  ], {
+    x: marginX + 0.1, y: impY, w: slideW - marginX * 2 - 0.2, h: 0.72,
+    valign: "middle", fontFace: "Calibri", margin: 0,
+  });
+
+  // Save
+  const filename = "theory-of-change-" + (tocData.topic || "export").toLowerCase().replace(/[^a-z0-9]+/g, "-") + ".pptx";
+  pres.writeFile({ fileName: filename });
+}
+
 // ── INIT ──────────────────────────────────────────────────
 (function init() {
   // Load worker URL FIRST so it's available when showApp() runs
@@ -1363,5 +1477,6 @@ function escapeHtml(str) {
   });
 })();
 </script>
+<script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
 </body>
 </html>
