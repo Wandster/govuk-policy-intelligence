@@ -334,6 +334,17 @@
     }
 
 
+    /* ── CONVERT BUTTON ── */
+    .convert-toc-btn {
+      margin-top: 10px;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: 20px; font-size: 12px; font-weight: 500;
+      background: #E1F5EE; color: #0F6E56;
+      border: 1px solid #9FE1CB; cursor: pointer; transition: all 0.15s;
+    }
+    .convert-toc-btn:hover { background: #9FE1CB; }
+    .convert-toc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
     /* ── TOC DIAGRAM ── */
     .toc-diagram { width: 100%; font-family: inherit; }
     .toc-level { margin-bottom: 6px; }
@@ -961,6 +972,9 @@ function appendAssistantMessage(text, lensId, govukDocs) {
     </div>`;
   }
 
+  // Only show convert button for prose responses (not ToC diagrams already)
+  const isAlreadyToC = parasHtml.includes("toc-diagram");
+
   const div = document.createElement("div");
   div.className = "msg-assistant";
   div.innerHTML = `
@@ -969,7 +983,18 @@ function appendAssistantMessage(text, lensId, govukDocs) {
       ${lens ? `<div><span class="lens-badge" style="background:${lens.bg};color:${lens.color}">${lens.icon} ${lens.label}</span></div>` : ""}
       <div class="msg-bubble">${parasHtml}${sourcesHtml}</div>
       ${suggestionsHtml}
+      ${!isAlreadyToC ? `<button class="convert-toc-btn">⟳ Convert to Theory of Change diagram</button>` : ""}
     </div>`;
+
+  // Attach click handler directly to avoid JSON escaping issues in onclick
+  if (!isAlreadyToC) {
+    const btn = div.querySelector(".convert-toc-btn");
+    const capturedText = text;
+    btn.addEventListener("click", function() {
+      convertToToC(capturedText, btn);
+    });
+  }
+
   wrap.appendChild(div);
   scrollBottom();
 }
@@ -988,6 +1013,94 @@ function appendErrorMessage(text) {
 function scrollBottom() {
   const el = document.getElementById("messages");
   el.scrollTop = el.scrollHeight;
+}
+
+// ── CONVERT TO TOC DIAGRAM ───────────────────────────────
+async function convertToToC(sourceText, btnEl) {
+  btnEl.disabled = true;
+  btnEl.textContent = "⟳ Converting…";
+
+  const prompt = `You are a Theory of Change expert. Based on the following text about UK government policy, extract and structure the content into a Theory of Change.
+
+Return ONLY a raw JSON object — no markdown, no backticks, no explanation. Just the JSON.
+
+{
+  "topic": "short descriptive title for the Theory of Change",
+  "impact": { "title": "Overarching impact statement", "sub": "detail or policy reference" },
+  "longTerm": [
+    { "title": "Long-term outcome 1", "sub": "detail" },
+    { "title": "Long-term outcome 2", "sub": "detail" },
+    { "title": "Long-term outcome 3", "sub": "detail" }
+  ],
+  "shortTerm": [
+    { "title": "Short-term outcome 1", "sub": "detail" },
+    { "title": "Short-term outcome 2", "sub": "detail" },
+    { "title": "Short-term outcome 3", "sub": "detail" }
+  ],
+  "outputs": [
+    { "title": "Output 1", "sub": "detail" },
+    { "title": "Output 2", "sub": "detail" },
+    { "title": "Output 3", "sub": "detail" }
+  ],
+  "activities": [
+    { "title": "Activity 1", "sub": "detail" },
+    { "title": "Activity 2", "sub": "detail" },
+    { "title": "Activity 3", "sub": "detail" }
+  ],
+  "inputs": [
+    { "title": "Input 1", "sub": "detail" },
+    { "title": "Input 2", "sub": "detail" },
+    { "title": "Input 3", "sub": "detail" }
+  ]
+}
+
+Always provide exactly 3 items per array. Be specific and concise. Base it strictly on the source text.
+
+Source text:
+${sourceText}`;
+
+  try {
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    if (!resp.ok) throw new Error("API error " + resp.status);
+    const data = await resp.json();
+    const raw = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("").trim();
+
+    // Parse JSON — strip any accidental backticks
+    const clean = raw.replace(/^```json\s*/,"").replace(/^```\s*/,"").replace(/\s*```$/,"").trim();
+    const tocData = JSON.parse(clean);
+
+    // Insert diagram after the button
+    const diagramDiv = document.createElement("div");
+    diagramDiv.style.marginTop = "16px";
+    diagramDiv.innerHTML = renderToCDiagram(tocData);
+    btnEl.parentNode.insertBefore(diagramDiv, btnEl.nextSibling);
+    btnEl.textContent = "✓ Theory of Change created";
+    btnEl.style.background = "#EAF3DE";
+    btnEl.style.color = "#3B6D11";
+    btnEl.style.borderColor = "#C0DD97";
+    btnEl.disabled = true;
+    diagramDiv.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  } catch(e) {
+    btnEl.textContent = "⟳ Convert to Theory of Change";
+    btnEl.disabled = false;
+    console.error("ToC conversion failed:", e);
+    alert("Conversion failed: " + e.message);
+  }
 }
 
 // ── TOC DETECTION ────────────────────────────────────────
